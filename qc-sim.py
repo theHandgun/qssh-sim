@@ -2,26 +2,30 @@ import Qubit as qm
 import socket as s
 import _thread
 import random
-from PyQt5.QtNetwork import QNetworkInterface
+from PyQt5.QtNetwork import QNetworkInterface # pyqt5 module required!
 import time
+import configparser
 
-STATE = 0
-Q_PORT = 5587
-PC_PORT = 5588
-ROUNDTRIP_QUBIT_MAX = 128
+config = configparser.ConfigParser()
+config.read("config.ini")
 
-SUCCESS_RATIO_UPPER_BOUNT = 0.8
-SUCCESS_RATIO_LOWER_BOUNT = 0.2
-LOGGING = False
+Q_PORT = int(config['ALL']['Q_PORT'])
+PC_PORT = int(config['ALL']['PC_PORT'])
+ROUNDTRIP_QUBIT_MAX = int(config['ALL']['ROUNDTRIP_QUBIT_MAX'])
+SUCCESS_RATIO_UPPER_BOUNT = float(config['ALL']['SUCCESS_RATIO_UPPER_BOUNT'])
+SUCCESS_RATIO_LOWER_BOUNT = float(config['ALL']['SUCCESS_RATIO_LOWER_BOUNT'])
+INFO_LOGGING = config['ALL']['INFO_LOGGING'] == 'True'
+METRICS_LOGGING = config['ALL']['METRICS_LOGGING'] == 'True'
 
 key_id_index = 0
-
 generated_keys = []
 
-
-
 def log(msg):
-    if(LOGGING):
+    if(INFO_LOGGING):
+        print(msg)
+
+def log_metrics(msg):
+    if(METRICS_LOGGING):
         print(msg)
 
 
@@ -47,8 +51,9 @@ def gen_new_key_from_basis_bits_arr(req_key_len, basis_bit_arr, generated_key):
     if(len(generated_key) >= req_key_len):
         key_count_diff = req_key_len - len(generated_key)
         if (key_count_diff < 0):
-            generated_key = generated_key[:key_count_diff] # Removing extra keys if too many were generated.
+            generated_key = generated_key[:key_count_diff] # Removing excess keys if too many were generated.
     return generated_key
+
 
 def get_new_key_as_initiator(req_key_len, qc_ip):
 
@@ -61,7 +66,6 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
 
     conn.sendall(bytes_utf8("gen-" + str(req_key_len)))
     
-    time_r0_start = None
     time_r1_send = None
     time_r1_receive = None
     time_r2_send = None
@@ -75,7 +79,7 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
         if(data != ""):
             log(data)
 
-        if(args[0] == "r0"): # Qubit transfer round, then send basis
+        if(args[0] == "r0"): # Qubit measurement round
             basis_str = ""
             for i in range(1, len(args)):
                 q = qm.Qubit(int(args[i]))
@@ -87,9 +91,9 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
             conn.sendall(bytes_utf8("r1-" + basis_str[:-1]))
 
         
-        elif(args[0] == "r1"): # Basis receive/check round
+        elif(args[0] == "r1"): # Basis receive and check round
             time_r1_receive = time.time()
-            print("Time it took for r1 message to be processed by initiated and sent back was '" + str(time_r1_receive - time_r1_send) + "' seconds. (r1 initiated performance)")
+            log_metrics("Time it took for r1 message to be processed by initiated and sent back was '" + str(time_r1_receive - time_r1_send) + "' seconds. (r1 initiated performance)")
 
             new_measurements, success_ratio = check_basis_and_modify_arr(args, basis_bit_arr)
             basis_bit_arr = new_measurements
@@ -112,12 +116,12 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
                     qval_msg += str(i) +  str(basis_bit_arr[i][1]) + "-"
                     basis_bit_arr[i] = None
                 time_r2_send = time.time()
-                print("Time it took for r1 to be processed by initiator was'" + str(time_r2_send - time_r1_receive) + "' seconds. (r1 initiator performance without network)")
+                log_metrics("Time it took for r1 to be processed by initiator was'" + str(time_r2_send - time_r1_receive) + "' seconds. (r1 initiator performance without network)")
                 conn.sendall(bytes_utf8("r2-" + qval_msg[:-1]))
 
-        elif(args[0] == "r2"): # Wrap up
+        elif(args[0] == "r2"): # Key gen and wrap up
             time_r2_receive = time.time()
-            print("Time it took for r2 to be processed by initiated was'" + str(time_r2_receive - time_r2_send) + "' seconds. (r2 inited performance)")
+            log_metrics("Time it took for r2 to be processed by initiated was'" + str(time_r2_receive - time_r2_send) + "' seconds. (r2 inited performance)")
             new_key = gen_new_key_from_basis_bits_arr(req_key_len, basis_bit_arr, generated_key)
             generated_key = new_key
 
@@ -129,7 +133,7 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
                 break
 
             time_r2_end = time.time()
-            print("Time it took for r2 wrap up was " + str(time_r2_end - time_r2_receive) + " seconds. (r2 initiator performance without network)")
+            log_metrics("Time it took for r2 wrap up was " + str(time_r2_end - time_r2_receive) + " seconds. (r2 initiator performance without network)")
 
         elif(args[0] == "f"):
             basis_bit_arr = []
@@ -154,7 +158,7 @@ def get_new_key_as_initiated(conn, req_key_len):
             if(data != ""):
                 log(data)
 
-        if(is_first_loop or args[0] == "r0"):
+        if(is_first_loop or args[0] == "r0"): # Qubit genration round
             round_qubit_len = min(req_key_len*4, ROUNDTRIP_QUBIT_MAX)
             response_msg = ""
             for _ in range(round_qubit_len):
@@ -174,9 +178,8 @@ def get_new_key_as_initiated(conn, req_key_len):
 
             new_measurements, success_ratio = check_basis_and_modify_arr(args, basis_bit_arr)
             basis_bit_arr = new_measurements
-            # TODO: Remove duplicate code.
             if( success_ratio < SUCCESS_RATIO_LOWER_BOUNT or success_ratio > SUCCESS_RATIO_UPPER_BOUNT):
-                log("Bad success ratio:" + str(success_ratio))
+                log("Bad success ratio: " + str(success_ratio))
                 conn.sendall(b"f")
                 basis_bit_arr = []
                 continue
@@ -184,22 +187,16 @@ def get_new_key_as_initiated(conn, req_key_len):
             conn.sendall(bytes_utf8("r1-" + basis_msg))
 
         elif(args[0] == "r2"):
-            is_round_success = True
             for i in range(1, len(args)):
-                #TODO: Remove duplicate code.
                 arr_index = int(args[i][:-1])
                 basis_val = int(args[i][-1:])
                 if(basis_val != basis_bit_arr[arr_index][1]):
                     log("Failed the test: " + str(basis_val) + "==" + str(basis_bit_arr[arr_index][1]) )
                     conn.sendall(b"f")
                     basis_bit_arr = []
-                    is_round_success = False
                     break
                 basis_bit_arr[arr_index] = None
 
-            if(is_round_success == False):
-                # TODO: Handle error ?
-                break
             
             new_key = gen_new_key_from_basis_bits_arr(req_key_len, basis_bit_arr, generated_key)
             generated_key = new_key
@@ -217,11 +214,10 @@ def get_new_key_as_initiated(conn, req_key_len):
 
 
 
+
 def q_server_listen_loop(server):
     while(True):
         qc_conn, address = server.accept()
-        # TODO: Only allow whitelisted IP address.
-        # This is the connection from quantum channel.
         while(True):
             data = qc_conn.recv(1024).decode()
             args = data.split("-")
@@ -238,7 +234,6 @@ def pc_server_listen_loop(server):
         while(True):
             data = pc_conn.recv(1024).decode()
             args = data.split("-")
-
             if(args[0] == "key"):
                 key_len = int(args[1])
                 qc_ip = args[2]
@@ -248,9 +243,10 @@ def pc_server_listen_loop(server):
                 break
 
 
+# MAIN EXECUTION #
+
 
 print("Booting..")
-
 
 
 def listen_interface_for_q(address):
@@ -262,20 +258,13 @@ def listen_interface_for_q(address):
     print("Quantum server created for interface IP: " + address)
 
 
-# DEBUG
 def start_q_sv():
-    
     all_Addresses = QNetworkInterface.allAddresses() # IPv6 and IPv4 addresses of all interfaces.
-
     for addr in all_Addresses: 
         if(addr.toIPv4Address()): # IPv4 addresses of all interfaces. (Need to not allow 127.0.0.1 on real infra or it connects to itself)
              _thread.start_new_thread( listen_interface_for_q, ( addr.toString(),) )
     
-#---------------
-
-
 try:
-
     pc_server = s.socket()
     pc_server.bind(('', PC_PORT))
     pc_server.listen(1)
@@ -292,5 +281,5 @@ except s.error as err:
 
 
 
-while True:
+while True: # Necessary for the threads to not die.
     pass
