@@ -5,9 +5,17 @@ import random
 from PyQt5.QtNetwork import QNetworkInterface # pyqt5 module required!
 import time
 import configparser
+import json
 
 config = configparser.ConfigParser()
 config.read("config.ini")
+
+# Hashmapping the json file for faster access.
+whitelist_file = open("whitelist.json")
+whitelist_json = json.load(whitelist_file)["whitelist"]
+whitelist = {} # This variable is to be used to access whitelists.
+for entry in whitelist_json:
+    whitelist.update({entry["pc_ip"]: entry["qc_ip"]})
 
 Q_PORT = int(config['ALL']['Q_PORT'])
 PC_PORT = int(config['ALL']['PC_PORT'])
@@ -236,8 +244,13 @@ def pc_server_listen_loop(server):
             args = data.split("-")
             if(args[0] == "key"):
                 key_len = int(args[1])
-                qc_ip = args[2]
-                id, key = get_new_key_as_initiator(key_len, qc_ip)
+                if(args[2] not in whitelist):
+                    print("Received non-whitelisted server IP for connection:", args[2])
+                    pc_conn.sendall(b"err-wl")
+                    pc_conn.close()
+                    break
+                target_ip = args[2]
+                id, key = get_new_key_as_initiator(key_len, whitelist[target_ip])
                 pc_conn.sendall(bytes_utf8("key-" + key + "-" + id))
                 pc_conn.close()
                 break
