@@ -10,13 +10,6 @@ import json
 config = configparser.ConfigParser()
 config.read("config.ini")
 
-# Hashmapping the json file for faster access.
-whitelist_file = open("whitelist.json")
-whitelist_json = json.load(whitelist_file)["whitelist"]
-whitelist = {} # This variable is to be used to access whitelists.
-for entry in whitelist_json:
-    whitelist.update({entry["pc_ip"]: entry["qc_ip"]})
-
 Q_PORT = int(config['ALL']['Q_PORT'])
 PC_PORT = int(config['ALL']['PC_PORT'])
 ROUNDTRIP_QUBIT_MAX = int(config['ALL']['ROUNDTRIP_QUBIT_MAX'])
@@ -65,13 +58,12 @@ def gen_new_key_from_basis_bits_arr(req_key_len, basis_bit_arr, generated_key):
 
 def get_new_key_as_initiator(req_key_len, qc_ip):
 
-    key_id = ""
     conn = s.socket(s.AF_INET, s.SOCK_STREAM)
     conn.connect((qc_ip, Q_PORT))
 
     basis_bit_arr = []
     generated_key = ""
-
+    
     conn.sendall(bytes_utf8("gen-" + str(req_key_len)))
     
     time_r1_send = None
@@ -137,7 +129,6 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
                 basis_bit_arr = []
                 conn.sendall(b"r0")
             else:
-                key_id = args[1] # Server will give key ID if the key is generated fully.
                 break
 
             time_r2_end = time.time()
@@ -147,17 +138,13 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
             basis_bit_arr = []
             continue
 
-    return key_id, generated_key
+    return generated_key
 
 def get_new_key_as_initiated(conn, req_key_len):
-    global key_id_index
     
-    key_id = str(key_id_index)
     generated_key = ""
     is_first_loop = True
     basis_bit_arr = []
-
-    key_id_index += 1
 
     while(True):
         if(not is_first_loop):
@@ -213,14 +200,16 @@ def get_new_key_as_initiated(conn, req_key_len):
                 basis_bit_arr = []
                 continue
             else:
-                conn.sendall(bytes_utf8("r2-" + key_id))
+                conn.sendall(bytes_utf8("r2"))
                 break
 
         is_first_loop = False
         
-    return key_id, generated_key
+    return generated_key
 
 
+def bitstring_to_bytes(s):
+    return int(s, 2).to_bytes((len(s) + 7) // 8, byteorder='big')
 
 
 def q_server_listen_loop(server):
@@ -230,30 +219,38 @@ def q_server_listen_loop(server):
             data = qc_conn.recv(1024).decode()
             args = data.split("-")
             if(args[0] == "gen"):
-                id, key = get_new_key_as_initiated(qc_conn, int(args[1]))
-                generated_keys.append((id, key))
+                key = get_new_key_as_initiated(qc_conn, int(args[1]))
+                generated_keys.append((address[0], key))
                 qc_conn.close()
                 break
 
 def pc_server_listen_loop(server):
     while(True):
-        pc_conn, address = server.accept()
+        data_address = server.recvfrom(1024)
+        data = data_address[0]
+        address = data_address[1]
+        if(len(data) != 0):
+            if(data[0] == 0):
+                server.sendto(bytearray([1]), address)
+            if(data[0] == 1):
+                target_ip_str = str(data[1]) + "." + str(data[2]) + "." + str(data[3]) + "." + str(data[4])
+                key_len = data[5:6]
+                key = get_new_key_as_initiator(key_len, target_ip_str)
+                response_bytes = list(bitstring_to_bytes(key))
+                response_bytes.insert(0, 0) # TODO: Make status codes work.
 
-        while(True):
-            data = pc_conn.recv(1024).decode()
-            args = data.split("-")
-            if(args[0] == "key"):
-                key_len = int(args[1])
-                if(args[2] not in whitelist):
-                    print("Received non-whitelisted server IP for connection:", args[2])
-                    pc_conn.sendall(b"err-wl")
-                    pc_conn.close()
-                    break
-                target_ip = args[2]
-                id, key = get_new_key_as_initiator(key_len, whitelist[target_ip])
-                pc_conn.sendall(bytes_utf8("key-" + key + "-" + id))
-                pc_conn.close()
-                break
+                server.sendto(response_bytes, address)
+            if(data[0] == 2):
+                target_ip_str = str(data[1]) + "." + str(data[2]) + "." + str(data[3]) + "." + str(data[4])
+                for i in range(generated_keys):
+                    if(generated_keys[i][0] == target_ip_str):
+                        key = generated_keys[i][1]
+                        response_bytes = list(bitstring_to_bytes(key))
+                        response_bytes.insert(0, 0) # TODO: Make status codes work.
+                        generated_keys[i] = None
+                        server.sendto(response_bytes, address)
+                        break
+
 
 
 # MAIN EXECUTION #
@@ -278,9 +275,8 @@ def start_q_sv():
              _thread.start_new_thread( listen_interface_for_q, ( addr.toString(),) )
     
 try:
-    pc_server = s.socket()
+    pc_server = s.socket(type=s.SOCK_DGRAM)
     pc_server.bind(('', PC_PORT))
-    pc_server.listen(1)
 
     _thread.start_new_thread( pc_server_listen_loop, ( pc_server, )  )
     print("PC server created.")
