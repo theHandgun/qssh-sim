@@ -244,7 +244,7 @@ def pc_server_listen_loop(server):
                 target_ip_str = str(data[1]) + "." + str(data[2]) + "." + str(data[3]) + "." + str(data[4])
                 key_len = data[5] * 256 + data[6]
                 generate_request_time = time.time()
-                key = get_new_key_as_initiator(key_len, target_ip_str)
+                key = get_new_key_as_initiator(key_len * 8, target_ip_str)
                 log_metrics("Time it took to generate the key with length " + str(key_len) + " bits was " + str(time.time() - generate_request_time) + " seconds.")
                 log(key)
                 response_bytes = list(bitstring_to_bytes(key))
