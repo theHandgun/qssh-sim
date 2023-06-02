@@ -17,6 +17,8 @@ SUCCESS_RATIO_UPPER_BOUNT = float(config['ALL']['SUCCESS_RATIO_UPPER_BOUNT'])
 SUCCESS_RATIO_LOWER_BOUNT = float(config['ALL']['SUCCESS_RATIO_LOWER_BOUNT'])
 INFO_LOGGING = config['ALL']['INFO_LOGGING'] == 'True'
 METRICS_LOGGING = config['ALL']['METRICS_LOGGING'] == 'True'
+CHANNEL_NOISE = float(config['ALL']['CHANNEL_NOISE'])
+SECOND_CHECK_MAX_FAIL_RATE = float(config['ALL']['SECOND_CHECK_MAX_FAIL_RATE'])
 
 QC_IP_ARR = QC_IP.split(".")
 
@@ -45,6 +47,17 @@ def check_basis_and_modify_arr(args, basis_bit_arr):
             success_count += 1
     success_ratio = success_count / (len(args) - 1)
     return basis_bit_arr, success_ratio
+
+def check_second_basis(args, basis_bit_arr):
+    success_count = 0
+    for i in range(1, len(args)):
+        if(args[i] != basis_bit_arr[i-1][0]):
+            basis_bit_arr[i-1] = None
+        else:
+            success_count += 1
+    success_ratio = success_count / (len(args) - 1)
+    return basis_bit_arr, success_ratio
+
 
 def gen_new_key_from_basis_bits_arr(req_key_len, basis_bit_arr, generated_key):
     for i in range(len(basis_bit_arr)):
@@ -78,9 +91,6 @@ def get_new_key_as_initiator(req_key_len, qc_ip):
     while(True):
         data = conn.recv(1024)
         
-        if(data != ""):
-            log(data)
-
         if(data[0] == 0): # Qubit measurement round
             basis_bytes = [1]
             for i in range(1, len(data), 2):
@@ -162,6 +172,13 @@ def get_new_key_as_initiated(conn, req_key_len):
                 rnd_basis = random.randint(0,1)
                 basis_bit_arr.append((rnd_basis, rnd_bit))
                 q_angle = (0 if rnd_bit == 0 else 180) + (0 if rnd_basis == 0 else 90)
+                q_angle += random.randint(math.floor(-CHANNEL_NOISE*180), math.floor(CHANNEL_NOISE*180))
+
+                if(q_angle > 360):
+                    q_angle -= 360
+                elif(q_angle < 0):
+                    q_angle += 360
+              
                 if(q_angle > 255):
                     response_bytes_arr.append(255)
                     response_bytes_arr.append(q_angle - 255)
@@ -187,15 +204,19 @@ def get_new_key_as_initiated(conn, req_key_len):
             conn.sendall(bytearray(basis_bytes))
 
         elif(data[0] == 2):
+            total_bits = (len(data)-1)/2
+            failed_bits = 0
             for i in range(1, len(data), 2):
                 arr_index = data[i]
                 basis_val = data[i+1]
                 if(basis_val != basis_bit_arr[arr_index][1]):
-                    log("Failed the test: " + str(basis_val) + "==" + str(basis_bit_arr[arr_index][1]) )
-                    conn.sendall(bytearray([99]))
-                    basis_bit_arr = []
-                    break
+                    failed_bits += 1
                 basis_bit_arr[arr_index] = None
+            
+            if(failed_bits/total_bits > SECOND_CHECK_MAX_FAIL_RATE):
+                log("Failed the second test, retrying..")
+                basis_bit_arr = []
+                conn.sendall(bytearray([99]))
 
             
             new_key = gen_new_key_from_basis_bits_arr(req_key_len, basis_bit_arr, generated_key)
@@ -246,7 +267,6 @@ def pc_server_listen_loop(server):
                 generate_request_time = time.time()
                 key = get_new_key_as_initiator(key_len * 8, target_ip_str)
                 log_metrics("Time it took to generate the key with length " + str(key_len) + " bits was " + str(time.time() - generate_request_time) + " seconds.")
-                log(key)
                 response_bytes = list(bitstring_to_bytes(key))
                 response_bytes.insert(0, 2)
 
