@@ -1,1 +1,0 @@
-sshpass -p "admin" rsync -ae "ssh -p 22" /mnt/c/Users/W10/Desktop/Projects/qc-project/qc-sim/*  berke@192.168.1.148:~/qc
